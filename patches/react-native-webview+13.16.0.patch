@@ -1,8 +1,8 @@
 diff --git a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebChromeClient.java b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebChromeClient.java
-index 07f73fd..275f2cd 100644
+index 07f73fd..036f0fc 100644
 --- a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebChromeClient.java
 +++ b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebChromeClient.java
-@@ -144,72 +144,32 @@ public class RNCWebChromeClient extends WebChromeClient implements LifecycleEven
+@@ -144,72 +144,17 @@ public class RNCWebChromeClient extends WebChromeClient implements LifecycleEven
  
      @Override
      public void onPermissionRequest(final PermissionRequest request) {
@@ -53,22 +53,8 @@ index 07f73fd..275f2cd 100644
 -
 -        requestPermissions(requestedAndroidPermissions);
 +        /**
-+         * FreeKiosk: Auto-grant all WebView media permission requests (camera, microphone,
-+         * protected media) without going through the native Android permission dialog.
-+         *
-+         * Why: On Fire OS (Amazon Echo Show, Fire tablets) and other non-standard Android
-+         * distributions, ContextCompat.checkSelfPermission() may return PERMISSION_DENIED
-+         * even when the permission was granted via `adb shell pm grant`. The subsequent
-+         * Activity.requestPermissions() dialog is then either suppressed or never shown,
-+         * causing getUserMedia() to fail silently.
-+         *
-+         * Since FreeKiosk is a kiosk app that:
-+         * - Already declares CAMERA and RECORD_AUDIO in AndroidManifest.xml
-+         * - Controls which URLs are loaded (URL filtering)
-+         * - Runs in a managed kiosk context where user consent is implied
-+         *
-+         * Auto-granting is the correct behavior. The actual hardware access is still
-+         * gated by the Android-level permission (granted via pm grant or Device Owner).
++         * FreeKiosk: Auto-grant all WebView media permission requests without
++         * going through the native runtime permission dialog.
 +         */
 +        request.grant(request.getResources());
      }
@@ -91,13 +77,12 @@ index 07f73fd..275f2cd 100644
 -        } else {
 -            callback.invoke(origin, true, false);
 -        }
-+        // FreeKiosk: Auto-grant geolocation for kiosk mode (same Fire OS rationale as onPermissionRequest)
 +        callback.invoke(origin, true, false);
      }
  
      private PermissionAwareActivity getPermissionAwareActivity() {
 diff --git a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
-index 0287e1c..1abee9d 100644
+index 0287e1c..1682e73 100644
 --- a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
 +++ b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
 @@ -1,9 +1,11 @@
@@ -116,8 +101,8 @@ index 0287e1c..1abee9d 100644
  import android.webkit.WebResourceResponse;
  import android.webkit.WebView;
  import android.webkit.WebViewClient;
-+import android.content.SharedPreferences;
 +import android.content.Context;
++import android.content.SharedPreferences;
  
  import androidx.annotation.Nullable;
  import androidx.annotation.RequiresApi;
@@ -129,7 +114,7 @@ index 0287e1c..1abee9d 100644
  import com.reactnativecommunity.webview.events.SubResourceErrorEvent;
  import com.reactnativecommunity.webview.events.TopHttpErrorEvent;
  import com.reactnativecommunity.webview.events.TopLoadingErrorEvent;
-@@ -35,14 +40,28 @@ import com.reactnativecommunity.webview.events.TopShouldStartLoadWithRequestEven
+@@ -35,14 +40,24 @@ import com.reactnativecommunity.webview.events.TopShouldStartLoadWithRequestEven
  import android.webkit.CookieManager;
  import android.webkit.CookieSyncManager;
  
@@ -146,35 +131,24 @@ index 0287e1c..1abee9d 100644
  public class RNCWebViewClient extends WebViewClient {
      private static String TAG = "RNCWebViewClient";
      protected static final int SHOULD_OVERRIDE_URL_LOADING_TIMEOUT = 250;
- 
-+    // Certificate expiration: 1 year in milliseconds
 +    private static final long CERTIFICATE_EXPIRATION_MS = 365L * 24 * 60 * 60 * 1000;
-+
+ 
      protected boolean mLastLoadFailed = false;
      protected RNCWebView.ProgressChangedFilter progressChangedFilter = null;
-+
-+    // FreeKiosk: Track current page URL for PDF proxy (thread-safe)
 +    private final AtomicReference<String> mCurrentPageUrl = new AtomicReference<>("");
      protected @Nullable RNCBasicAuthCredential basicAuthCredential = null;
  
      public void setBasicAuthCredential(@Nullable RNCBasicAuthCredential credential) {
-@@ -86,10 +105,136 @@ public class RNCWebViewClient extends WebViewClient {
+@@ -85,11 +100,123 @@ public class RNCWebViewClient extends WebViewClient {
+     public void onPageStarted(WebView webView, String url, Bitmap favicon) {
        super.onPageStarted(webView, url, favicon);
        mLastLoadFailed = false;
- 
-+      // FreeKiosk: Track current URL for PDF proxy
 +      mCurrentPageUrl.set(url != null ? url : "");
-+
+ 
        RNCWebView reactWebView = (RNCWebView) webView;
        reactWebView.callInjectedJavaScriptBeforeContentLoaded();
      }
  
-+    /**
-+     * FreeKiosk PDF Proxy: When the PDF.js viewer (loaded from file:///android_asset/pdfjs/)
-+     * makes XHR/fetch requests to download a remote PDF, we intercept them here and
-+     * proxy via native HttpURLConnection. This bypasses CORS restrictions that would
-+     * otherwise block file:// -> https:// requests on many servers.
-+     */
 +    @Override
 +    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
 +        String pageUrl = mCurrentPageUrl.get();
@@ -189,7 +163,6 @@ index 0287e1c..1abee9d 100644
 +                    conn.setConnectTimeout(15000);
 +                    conn.setReadTimeout(30000);
 +
-+                    // Forward request headers (Range, Accept, User-Agent, etc.)
 +                    Map<String, String> reqHeaders = request.getRequestHeaders();
 +                    if (reqHeaders != null) {
 +                        for (Map.Entry<String, String> entry : reqHeaders.entrySet()) {
@@ -197,14 +170,11 @@ index 0287e1c..1abee9d 100644
 +                        }
 +                    }
 +
-+                    // Forward cookies for the target domain
 +                    String cookie = CookieManager.getInstance().getCookie(requestUrl);
 +                    if (cookie != null && !cookie.isEmpty()) {
 +                        conn.setRequestProperty("Cookie", cookie);
 +                    }
 +
-+                    // Ensure Referer header is set - file:// origins don't send Referer,
-+                    // but some CDNs/WAFs (e.g. Alibaba Cloud) require it
 +                    boolean hasReferer = reqHeaders != null && (reqHeaders.containsKey("Referer") || reqHeaders.containsKey("referer"));
 +                    if (!hasReferer) {
 +                        conn.setRequestProperty("Referer", requestUrl);
@@ -214,9 +184,10 @@ index 0287e1c..1abee9d 100644
 +
 +                    int statusCode = conn.getResponseCode();
 +                    String statusMessage = conn.getResponseMessage();
-+                    if (statusMessage == null) statusMessage = "OK";
++                    if (statusMessage == null) {
++                        statusMessage = "OK";
++                    }
 +
-+                    // Determine MIME type
 +                    String contentType = conn.getContentType();
 +                    String mimeType = "application/octet-stream";
 +                    String encoding = null;
@@ -231,7 +202,6 @@ index 0287e1c..1abee9d 100644
 +                        }
 +                    }
 +
-+                    // Build response headers, inject CORS allow-all
 +                    Map<String, String> responseHeaders = new HashMap<>();
 +                    responseHeaders.put("Access-Control-Allow-Origin", "*");
 +                    responseHeaders.put("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -242,7 +212,6 @@ index 0287e1c..1abee9d 100644
 +                        for (Map.Entry<String, List<String>> entry : headerFields.entrySet()) {
 +                            String key = entry.getKey();
 +                            if (key != null && !key.isEmpty() && entry.getValue() != null && !entry.getValue().isEmpty()) {
-+                                // Don't override our CORS headers
 +                                String keyLower = key.toLowerCase();
 +                                if (!keyLower.startsWith("access-control-")) {
 +                                    responseHeaders.put(key, entry.getValue().get(0));
@@ -251,13 +220,11 @@ index 0287e1c..1abee9d 100644
 +                        }
 +                    }
 +
-+                    // Persist Set-Cookie from proxied response for subsequent requests
-+                    // Critical for WAF/CDN session cookies (e.g. Alibaba Cloud acw_tc)
 +                    if (headerFields != null) {
-+                        for (Map.Entry<String, List<String>> h : headerFields.entrySet()) {
-+                            if (h.getKey() != null && h.getKey().equalsIgnoreCase("Set-Cookie") && h.getValue() != null) {
-+                                for (String sc : h.getValue()) {
-+                                    CookieManager.getInstance().setCookie(requestUrl, sc);
++                        for (Map.Entry<String, List<String>> header : headerFields.entrySet()) {
++                            if (header.getKey() != null && header.getKey().equalsIgnoreCase("Set-Cookie") && header.getValue() != null) {
++                                for (String setCookie : header.getValue()) {
++                                    CookieManager.getInstance().setCookie(requestUrl, setCookie);
 +                                }
 +                            }
 +                        }
@@ -266,7 +233,9 @@ index 0287e1c..1abee9d 100644
 +                    InputStream inputStream;
 +                    if (statusCode >= 400) {
 +                        inputStream = conn.getErrorStream();
-+                        if (inputStream == null) inputStream = conn.getInputStream();
++                        if (inputStream == null) {
++                            inputStream = conn.getInputStream();
++                        }
 +                    } else {
 +                        inputStream = conn.getInputStream();
 +                    }
@@ -285,7 +254,6 @@ index 0287e1c..1abee9d 100644
 +                    );
 +                } catch (Exception e) {
 +                    Log.e(TAG, "[FreeKiosk] PDF proxy error for " + requestUrl + ": " + e.getMessage());
-+                    // Fall through to default behavior
 +                }
 +            }
 +        }
@@ -295,18 +263,17 @@ index 0287e1c..1abee9d 100644
      @Override
      public boolean shouldOverrideUrlLoading(WebView view, String url) {
          final RNCWebView rncWebView = (RNCWebView) view;
-@@ -157,23 +302,15 @@ public class RNCWebViewClient extends WebViewClient {
+@@ -155,25 +282,34 @@ public class RNCWebViewClient extends WebViewClient {
+         super.onReceivedHttpAuthRequest(view, handler, host, realm);
+     }
  
-+    /**
-+     * Returns true if the SSL error originates from the main frame rather than a sub-resource.
-+     * Handles three cases:
-+     *  - topWindowUrl is null/empty: initial navigation, webView.getUrl() not set yet
-+     *  - exact match: normal case
-+     *  - same host: redirect chain (e.g. http://host -> https://host or /path change)
-+     */
 +    private boolean isMainFrameRequest(String topWindowUrl, String failingUrl) {
-+        if (topWindowUrl == null || topWindowUrl.isEmpty()) return true;
-+        if (topWindowUrl.equalsIgnoreCase(failingUrl)) return true;
++        if (topWindowUrl == null || topWindowUrl.isEmpty()) {
++            return true;
++        }
++        if (topWindowUrl.equalsIgnoreCase(failingUrl)) {
++            return true;
++        }
 +        try {
 +            android.net.Uri topUri = android.net.Uri.parse(topWindowUrl);
 +            android.net.Uri failUri = android.net.Uri.parse(failingUrl);
@@ -338,11 +305,10 @@ index 0287e1c..1abee9d 100644
          String descriptionPrefix = "SSL error: ";
  
 -        // https://developer.android.com/reference/android/net/http/SslError.html
-+        // Get error description
          switch (code) {
              case SslError.SSL_DATE_INVALID:
                  description = "The date of the certificate is invalid";
-@@ -200,24 +337,226 @@ public class RNCWebViewClient extends WebViewClient {
+@@ -200,24 +336,166 @@ public class RNCWebViewClient extends WebViewClient {
  
          description = descriptionPrefix + description;
  
@@ -357,9 +323,8 @@ index 0287e1c..1abee9d 100644
 -        );
 -        return;
 -      }
-+        // Check if certificate is already accepted (with expiration check).
-+        // No URL equality check here — the fingerprint alone uniquely identifies the cert,
-+        // and the URL may differ after a redirect (e.g. http → https).
+-
+-        this.onReceivedError(
 +        String certFingerprint = getCertificateFingerprint(error.getCertificate());
 +        if (isCertificateAccepted(webView.getContext(), certFingerprint, failingUrl) &&
 +            code == SslError.SSL_UNTRUSTED) {
@@ -369,21 +334,13 @@ index 0287e1c..1abee9d 100644
 +            handler.proceed();
 +            return;
 +        }
-
--        this.onReceivedError(
-+        // IMPORTANT: Only show dialog for self-signed (SSL_UNTRUSTED) on the main frame.
-+        // isMainFrameRequest() handles: null topWindowUrl (initial nav), exact match, and
-+        // same-host redirects (http → https) which are common with local servers like HA.
++
 +        if (code == SslError.SSL_UNTRUSTED && isMainFrameRequest(topWindowUrl, failingUrl)) {
-+            // Show user consent dialog
-+            android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(webView.getContext());
++            AlertDialog.Builder builder = new AlertDialog.Builder(webView.getContext());
 +            builder.setTitle("SSL Certificate Warning");
 +
-+            // Extract certificate info for display
 +            String certIssuer = error.getCertificate().getIssuedBy().getDName();
 +            String certSubject = error.getCertificate().getIssuedTo().getDName();
-+
-+            // Format fingerprint for better readability (XX:XX:XX format)
 +            String fingerprintFormatted = formatFingerprint(certFingerprint);
 +
 +            builder.setMessage("SECURITY WARNING: This server uses a self-signed certificate.\n\n" +
@@ -403,7 +360,6 @@ index 0287e1c..1abee9d 100644
 +                if (BuildConfig.DEBUG) {
 +                    Log.i(TAG, "User accepted SSL certificate for: " + failingUrl + " (fingerprint: " + certFingerprint + ")");
 +                }
-+                // Save the certificate as accepted with URL and expiration
 +                saveCertificateAcceptance(webView.getContext(), certFingerprint, failingUrl);
 +                handler.proceed();
 +            });
@@ -420,48 +376,32 @@ index 0287e1c..1abee9d 100644
 +            return;
 +        }
 +
-+        // For other SSL errors (expired, mismatch, etc) or sub-resources → reject
 +        if (!isMainFrameRequest(topWindowUrl, failingUrl)) {
-+            // Subresource error
 +            Log.w(TAG, "Resource blocked from loading due to SSL error. Blocked URL: " + failingUrl);
 +            this.onReceivedSubResourceSslError(
                  webView,
                  code,
                  description,
                  failingUrl
+-        );
 +            );
 +            handler.cancel();
 +            return;
 +        }
 +
-+        // Top-level navigation error (not SSL_UNTRUSTED)
 +        Log.e(TAG, "SSL Error on main page: " + description);
 +        handler.cancel();
-+        this.onReceivedError(
-+            webView,
-+            code,
-+            description,
-+            failingUrl
-+        );
++        this.onReceivedError(webView, code, description, failingUrl);
 +    }
 +
-+    // ✅ IMPROVED: Helper methods to manage certificate acceptance with SHA-256 and expiration
-+
-+    /**
-+     * Get certificate fingerprint using SHA-256 hash
-+     * This is cryptographically unique and matches browser implementations
-+     */
 +    private String getCertificateFingerprint(android.net.http.SslCertificate cert) {
 +        try {
-+            // Try to get X509 certificate bytes for SHA-256 calculation
 +            Bundle bundle = android.net.http.SslCertificate.saveState(cert);
 +            byte[] certBytes = bundle.getByteArray("x509-certificate");
 +
 +            if (certBytes != null) {
 +                MessageDigest digest = MessageDigest.getInstance("SHA-256");
 +                byte[] hash = digest.digest(certBytes);
-+
-+                // Convert to hexadecimal string
 +                StringBuilder hexString = new StringBuilder();
 +                for (byte b : hash) {
 +                    String hex = Integer.toHexString(0xff & b);
@@ -478,26 +418,20 @@ index 0287e1c..1abee9d 100644
 +            }
 +        }
 +
-+        // Fallback: use issuer + subject (less secure but better than nothing)
 +        String issuer = cert.getIssuedBy().getDName();
 +        String subject = cert.getIssuedTo().getDName();
 +        return issuer + "|" + subject;
 +    }
 +
-+    /**
-+     * Format fingerprint in XX:XX:XX:... format for better readability
-+     */
 +    private String formatFingerprint(String fingerprint) {
 +        if (fingerprint == null || fingerprint.length() < 2) {
 +            return fingerprint;
 +        }
-+        
-+        // Check if it's a hex string (SHA-256 = 64 chars)
++
 +        if (!fingerprint.matches("^[0-9a-fA-F]+$")) {
-+            return fingerprint; // Not hex, return as-is (fallback format)
++            return fingerprint;
 +        }
 +
-+        // Split into pairs and join with colons
 +        StringBuilder formatted = new StringBuilder();
 +        for (int i = 0; i < fingerprint.length(); i += 2) {
 +            if (i > 0) {
@@ -508,28 +442,16 @@ index 0287e1c..1abee9d 100644
 +        return formatted.toString().toUpperCase();
 +    }
 +
-+    /**
-+     * Check if certificate is already accepted by user
-+     * Also checks expiration date and auto-removes expired certificates
-+     */
 +    private boolean isCertificateAccepted(Context context, String fingerprint, String url) {
-+        SharedPreferences prefs = context.getSharedPreferences(
-+            "freekiosk_ssl_certs",
-+            Context.MODE_PRIVATE
-         );
-+
-+        // Check if certificate is accepted
++        SharedPreferences prefs = context.getSharedPreferences("freekiosk_ssl_certs", Context.MODE_PRIVATE);
 +        boolean isAccepted = prefs.getBoolean("cert_" + fingerprint, false);
 +        if (!isAccepted) {
 +            return false;
 +        }
 +
-+        // Check expiration time
 +        long expiryTime = prefs.getLong("cert_expiry_" + fingerprint, 0);
 +        long currentTime = System.currentTimeMillis();
-+
 +        if (currentTime > expiryTime) {
-+            // Certificate acceptance has expired - remove it
 +            if (BuildConfig.DEBUG) {
 +                Log.i(TAG, "Certificate acceptance expired for: " + url);
 +            }
@@ -544,18 +466,9 @@ index 0287e1c..1abee9d 100644
 +        return true;
 +    }
 +
-+    /**
-+     * Save certificate as accepted by user
-+     * Stores: acceptance flag, expiration timestamp, and URL
-+     */
 +    private void saveCertificateAcceptance(Context context, String fingerprint, String url) {
 +        long expirationTime = System.currentTimeMillis() + CERTIFICATE_EXPIRATION_MS;
-+
-+        SharedPreferences prefs = context.getSharedPreferences(
-+            "freekiosk_ssl_certs",
-+            Context.MODE_PRIVATE
-+        );
-+
++        SharedPreferences prefs = context.getSharedPreferences("freekiosk_ssl_certs", Context.MODE_PRIVATE);
 +        prefs.edit()
 +            .putBoolean("cert_" + fingerprint, true)
 +            .putLong("cert_expiry_" + fingerprint, expirationTime)
@@ -567,15 +480,8 @@ index 0287e1c..1abee9d 100644
 +        }
 +    }
 +
-+    /**
-+     * Clear all accepted certificates (called from CertificateModule)
-+     * This is a static method so it can be called from the native module
-+     */
 +    public static void clearAcceptedCertificates(Context context) {
-+        SharedPreferences prefs = context.getSharedPreferences(
-+            "freekiosk_ssl_certs",
-+            Context.MODE_PRIVATE
-+        );
++        SharedPreferences prefs = context.getSharedPreferences("freekiosk_ssl_certs", Context.MODE_PRIVATE);
 +        prefs.edit().clear().apply();
 +        if (BuildConfig.DEBUG) {
 +            Log.i(TAG, "All accepted certificates cleared");
@@ -583,7 +489,7 @@ index 0287e1c..1abee9d 100644
      }
  
      public void onReceivedSubResourceSslError(
-@@ -314,8 +653,6 @@ public class RNCWebViewClient extends WebViewClient {
+@@ -314,8 +592,6 @@ public class RNCWebViewClient extends WebViewClient {
      protected WritableMap createWebViewEvent(WebView webView, String url) {
          WritableMap event = Arguments.createMap();
          event.putDouble("target", RNCWebViewWrapper.getReactTagFromWebView(webView));
@@ -593,30 +499,23 @@ index 0287e1c..1abee9d 100644
          event.putBoolean("loading", !mLastLoadFailed && webView.getProgress() != 100);
          event.putString("title", webView.getTitle());
 diff --git a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
-index f83033b..98721f1 100644
+index f83033b..1763b97 100644
 --- a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
 +++ b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
-@@ -92,14 +92,42 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
+@@ -92,14 +92,35 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
              WebView.setWebContentsDebuggingEnabled(true)
          }
          webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
-+            // FreeKiosk: Check if this is an explicit download request (from PDF viewer download button)
-+            // The __fk_dl=1 marker means "user wants to download, don't redirect to viewer"
 +            var cleanUrl = url
 +            val isExplicitDownload = url.contains("__fk_dl=1")
 +            if (isExplicitDownload) {
-+                // Strip the marker from URL before downloading
 +                cleanUrl = url.replace("&__fk_dl=1", "").replace("?__fk_dl=1&", "?").replace("?__fk_dl=1", "")
 +                Log.i(TAG, "[FreeKiosk] Explicit PDF download requested: $cleanUrl")
 +            }
 +
-+            // FreeKiosk PDF Viewer: intercept PDF downloads and open in local PDF.js viewer
-+            // We use allowFileAccess as the signal that PDF viewer is enabled
-+            // (it's only set to true when pdfViewerEnabled prop is true)
-+            // Skip interception if user explicitly requested download
 +            if (!isExplicitDownload) {
 +                val isPdf = mimetype?.lowercase()?.contains("pdf") == true ||
-+                            cleanUrl.lowercase().split("?")[0].split("#")[0].endsWith(".pdf")
++                    cleanUrl.lowercase().split("?")[0].split("#")[0].endsWith(".pdf")
 +                if (isPdf && webView.settings.allowFileAccess) {
 +                    Log.i(TAG, "[FreeKiosk] PDF download intercepted, redirecting to PDF.js viewer: $cleanUrl")
 +                    val encodedUrl = java.net.URLEncoder.encode(cleanUrl, "UTF-8")
@@ -641,7 +540,7 @@ index f83033b..98721f1 100644
  
              // Sanitize filename by replacing invalid characters with "_"
              fileName = fileName.replace(invalidCharRegex, "_")
-@@ -109,7 +137,7 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
+@@ -109,7 +130,7 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
              //Attempt to add cookie, if it exists
              var urlObj: URL? = null
              try {
