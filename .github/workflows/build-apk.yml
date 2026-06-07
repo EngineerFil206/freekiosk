@@ -48,9 +48,21 @@ jobs:
       - name: Ensure Gradle wrapper is executable
         run: chmod +x android/gradlew
 
+      - name: Prepare Gradle properties for CI
+        run: |
+          printf '%s\n' \
+            'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dkotlin.daemon.jvm.options=-Xmx2g' \
+            'org.gradle.daemon=true' \
+            'org.gradle.parallel=false' \
+            'org.gradle.configureondemand=false' \
+            'android.useAndroidX=true' \
+            'android.enableJetifier=true' \
+            'newArchEnabled=false' \
+            > android/gradle.properties
+
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
