@@ -1,72 +1,73 @@
 name: Build APK
 
 on:
+  workflow_dispatch:
   push:
     branches:
-      - '**'
-  pull_request:
-  workflow_dispatch:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Set up JDK
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
 
-      - name: Install Android SDK packages
-        run: |
-          yes | sdkmanager --licenses
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "ndk;27.1.12297006" \
-            "cmake;3.22.1"
-
-      - name: Install JavaScript dependencies
+      - name: Install dependencies
         run: npm ci
 
-      - name: Ensure Gradle wrapper is executable
+      - name: Show environment
+        run: |
+          java -version
+          node --version
+          npm --version
+
+      - name: Make Gradle executable
         run: chmod +x android/gradlew
 
-      - name: Prepare Gradle properties for CI
-        run: |
-          printf '%s\n' \
-            'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dkotlin.daemon.jvm.options=-Xmx2g' \
-            'org.gradle.daemon=true' \
-            'org.gradle.parallel=false' \
-            'org.gradle.configureondemand=false' \
-            'android.useAndroidX=true' \
-            'android.enableJetifier=true' \
-            'newArchEnabled=false' \
-            > android/gradle.properties
-
-      - name: Build debug APK
+      - name: Build APK
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug
+        env:
+          GRADLE_OPTS: >-
+            -Xmx6g
+            -XX:MaxMetaspaceSize=2g
+            -Dorg.gradle.daemon=false
+        run: |
+          ./gradlew clean
+          ./gradlew assembleDebug \
+            --stacktrace \
+            --info
 
-      - name: Upload APK artifact
+      - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: freekiosk-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          path: android/app/build/outputs/apk/debug/*.apk
+
+      - name: Upload build outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-logs
+          path: |
+            android/**/*.log
+            android/app/build/reports/**
+            android/build/reports/**
